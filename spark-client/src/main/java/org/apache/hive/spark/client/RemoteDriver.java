@@ -25,10 +25,7 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -41,11 +38,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.hive.common.classification.InterfaceAudience;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hive.spark.client.metrics.Metrics;
 import org.apache.hive.spark.client.rpc.Rpc;
 import org.apache.hive.spark.client.rpc.RpcConfiguration;
 import org.apache.hive.spark.counter.SparkCounters;
 import org.apache.spark.SparkConf;
+import org.apache.spark.SparkException;
 import org.apache.spark.SparkJobInfo;
 import org.apache.spark.api.java.JavaFutureAction;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -170,6 +169,13 @@ public class RemoteDriver {
 
     try {
       JavaSparkContext sc = new JavaSparkContext(conf);
+
+      String sessionTimeoutInterval = conf.get(HiveConf.ConfVars.SPARK_SESSION_AM_DAG_SUBMIT_TIMEOUT_SECS.varname);
+      if (sessionTimeoutInterval == null || Integer.valueOf(sessionTimeoutInterval) == 0) {
+        sc.sc().addSparkListener(new ClientListener());
+      } else {
+        sc.sc().addSparkListener(new ClientListener(this, 1000*Integer.valueOf(sessionTimeoutInterval)));
+      }
       sc.sc().addSparkListener(new ClientListener());
       synchronized (jcLock) {
         jc = new JobContextImpl(sc, localTmpDir);
@@ -487,6 +493,44 @@ public class RemoteDriver {
   private class ClientListener extends SparkListener {
 
     private final Map<Integer, Integer> stageToJobId = Maps.newHashMap();
+    private long sessionTimeoutInterval;
+    private long lastDAGCompletionTime = System.currentTimeMillis();
+    private RemoteDriver driver;
+
+    ClientListener() {}
+
+    ClientListener(RemoteDriver driver, long sessionTimeoutInterval) {
+      this.sessionTimeoutInterval = sessionTimeoutInterval;
+      this.driver = driver;
+      new Timer("DAGSubmissionTimer", true).scheduleAtFixedRate(new TimerTask() {
+        @Override
+        public void run() {
+          try {
+            if (stageToJobId.size() == 0) {
+              checkAndHandleSessionTimeout();
+            } else {
+              LOG.debug("Some job stages are still running, no need to check session timeout(stages size:" + stageToJobId.size() + ")");
+            }
+          } catch (SparkException e) {
+            LOG.error("Error when checking AM session timeout", e);
+          }
+        }
+      }, sessionTimeoutInterval, sessionTimeoutInterval / 10);
+    }
+
+    private synchronized void checkAndHandleSessionTimeout() throws SparkException {
+
+      long currentTime = System.currentTimeMillis();
+      if (currentTime < (lastDAGCompletionTime + sessionTimeoutInterval)) {
+        return;
+      }
+      String message = "Session timed out"
+              + ", lastDAGCompletionTime=" + lastDAGCompletionTime + " ms"
+              + ", sessionTimeoutInterval=" + sessionTimeoutInterval + " ms";
+      LOG.info(message);
+      if (driver != null)
+        driver.shutdown(null);
+    }
 
     @Override
     public void onJobStart(SparkListenerJobStart jobStart) {
@@ -513,6 +557,7 @@ public class RemoteDriver {
       if (clientId != null) {
         activeJobs.get(clientId).jobDone();
       }
+      lastDAGCompletionTime = System.currentTimeMillis();
     }
 
     @Override

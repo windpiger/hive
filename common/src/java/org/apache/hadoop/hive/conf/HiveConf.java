@@ -4233,6 +4233,9 @@ public class HiveConf extends Configuration {
       "Channel logging level for remote Spark driver.  One of {DEBUG, ERROR, INFO, TRACE, WARN}."),
     SPARK_RPC_SASL_MECHANISM("hive.spark.client.rpc.sasl.mechanisms", "DIGEST-MD5",
       "Name of the SASL mechanism to use for authentication."),
+    SPARK_SESSION_AM_DAG_SUBMIT_TIMEOUT_SECS("hive.spark.session.am.dag.submit.timeout.secs", 300 ,"Int value. Time " +
+            "(in seconds) for which the Spark AM should wait for a DAG to be submitted before shutting down." +
+            "Only relevant in session mode. Value 0 will disable this check and allow the AM to hang around forever in idle mode."),
     SPARK_RPC_SERVER_ADDRESS("hive.spark.client.rpc.server.address", "",
       "The server address of HiverServer2 host to be used for communication between Hive client and remote Spark driver. " +
       "Default is empty, which means the address will be determined in the same way as for hive.server2.thrift.bind.host." +
